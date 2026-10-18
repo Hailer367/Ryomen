@@ -1,5 +1,6 @@
 import {
   bollingerReversion,
+  btcMomentumRider,
   donchianBreakout,
   macdTrend,
   rsiReversal,
@@ -32,6 +33,7 @@ export function profileFor(strategy: Strategy, granularity: Granularity): Granul
  */
 export const STRATEGIES: readonly Strategy[] = Object.freeze([
   smaGoldenCross,
+  btcMomentumRider,
   volatilityTrail,
   donchianBreakout,
   macdTrend,
@@ -44,6 +46,17 @@ const BY_ID = new Map(STRATEGIES.map((s) => [s.id, s]));
 
 const duplicate = STRATEGIES.map((s) => s.id).find((id, i, arr) => arr.indexOf(id) !== i);
 if (duplicate) throw new Error(`Duplicate strategy id registered: ${duplicate}`);
+
+/** Strategies explicitly limited to particular assets. */
+export function allowedCoins(strategy: Strategy): readonly string[] | null {
+  return strategy.coins ?? null;
+}
+
+/** True when `strategy` may trade `coinId`. */
+export function strategyAllowsCoin(strategy: Strategy, coinId: string): boolean {
+  const allowed = allowedCoins(strategy);
+  return allowed === null || allowed.includes(coinId);
+}
 
 export function getStrategy(id: string): Strategy | undefined {
   return BY_ID.get(id);

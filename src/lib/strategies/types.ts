@@ -64,6 +64,12 @@ export interface Strategy {
   readonly philosophy: string;
   readonly defaultParams: Readonly<Record<string, number>>;
   readonly paramsMeta: readonly StrategyParamMeta[];
+  /**
+   * Restrict this strategy to specific assets. Omit to allow it on any coin the
+   * bot owns. Asset-specific strategies (e.g. BTC-only) exist because some
+   * patterns genuinely only hold on one market.
+   */
+  readonly coins?: readonly string[];
   /** Minimum number of candles required before the strategy can fire. */
   readonly minCandles: number;
   /** Optional per-bar-size calibration, keyed by granularity. */

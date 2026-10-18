@@ -1,5 +1,5 @@
 import { COINS } from "@/lib/coins";
-import { listStrategies } from "@/lib/strategies";
+import { requireStrategy } from "@/lib/strategies";
 
 /**
  * Bot configuration — also permanent code, not user-editable.
@@ -80,6 +80,7 @@ export const BOTS: readonly CoinBot[] = Object.freeze([
     "BTC Trend Sentinel",
     [
       { strategyId: "sma-golden-cross", weight: 1.0, primary: true },
+      { strategyId: "btc-momentum-rider", weight: 1.0 },
       { strategyId: "volatility-trail", weight: 1.0 },
       { strategyId: "macd-trend", weight: 1.0 },
       { strategyId: "donchian-breakout", weight: 0.8 },
@@ -193,15 +194,21 @@ export function listBots(): readonly CoinBot[] {
   return BOTS;
 }
 
-/** Validate at import time that every bot references real coins and strategies. */
+/**
+ * Validate at import time that every bot references real coins and strategies,
+ * and that asset-scoped strategies (e.g. BTC-only) are never assigned to a bot
+ * that trades a different asset.
+ */
 (function validateBotRegistry() {
   const validCoins = new Set(COINS.map((c) => c.id));
-  const validStrategies = new Set(listStrategies().map((s) => s.id));
   for (const b of BOTS) {
     if (!validCoins.has(b.coinId)) throw new Error(`Bot ${b.id} references unknown coin ${b.coinId}`);
     for (const a of b.assignments) {
-      if (!validStrategies.has(a.strategyId)) {
-        throw new Error(`Bot ${b.id} references unknown strategy ${a.strategyId}`);
+      const strategy = requireStrategy(a.strategyId);
+      if (strategy.coins && !strategy.coins.includes(b.coinId)) {
+        throw new Error(
+          `Bot ${b.id} assigns ${a.strategyId}, which is restricted to ${strategy.coins.join(", ")}.`,
+        );
       }
     }
   }
