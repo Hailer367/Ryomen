@@ -1,0 +1,32 @@
+{
+  "name": "ryomen",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ryomen — a multi-coin automated crypto trading bot with permanent, code-defined strategies and CoinGecko market data.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "db:init": "tsx scripts/init-db.ts",
+    "warm": "tsx scripts/warm.ts",
+    "backtest": "tsx scripts/backtest.ts",
+    "backtest:all": "tsx scripts/backtest-all.ts",
+    "optimize": "tsx scripts/optimize.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "lightweight-charts": "^4.2.3",
+    "next": "^15.4.6",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.3",
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
