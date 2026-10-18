@@ -460,6 +460,175 @@ export const btcMomentumRider: Strategy = Object.freeze({
 });
 
 /**
+ * ETH Pullback Rider — **Ethereum only**.
+ *
+ * Buys shallow dips that happen inside an intact uptrend, rather than chasing
+ * breakouts. Chosen from measurement, not taste: over Ryomen's hourly history
+ * ETH shows positive short-lag autocorrelation but strongly negative behaviour
+ * around a ~100-bar mean, and a naive buy-the-dip system on that horizon made
+ * +28.3% where the equivalent trend-follower made +4.1%. BTC shows the opposite
+ * profile, which is why it gets the momentum rider instead.
+ *
+ * ETH is also markedly more volatile (0.49% per hourly bar vs BTC's 0.37%) and
+ * twice as drawdown-prone, so exits are deliberately looser than BTC's.
+ *
+ * Forward-safe: every input derives from closed bars at or before `index`.
+ */
+export const ethPullbackRider: Strategy = Object.freeze({
+  id: "eth-pullback-rider",
+  name: "ETH Pullback Rider",
+  category: "Trend",
+  coins: ["ethereum"],
+  description:
+    "Ethereum only. Buys shallow pullbacks toward a medium moving average while the long-term trend holds, and exits when the trend breaks or a volatility-scaled trail is hit.",
+  philosophy:
+    "ETH trends over days and mean-reverts over hours. Rather than chase strength, wait for a routine dip inside an uptrend and buy it — then let a volatility-scaled trail decide when the trend is actually over.",
+  defaultParams: {
+    trendPeriod: 100,
+    pullbackPeriod: 30,
+    rocPeriod: 12,
+    rocThreshold: -1,
+    minDepthPct: 0,
+    atrPeriod: 14,
+    atrMult: 4,
+    trailPeriod: 12,
+  },
+  paramsMeta: [
+    { key: "trendPeriod", label: "Long trend EMA", min: 40, max: 300 },
+    { key: "pullbackPeriod", label: "Pullback EMA", min: 5, max: 100 },
+    { key: "rocPeriod", label: "Recovery lookback", min: 3, max: 100 },
+    { key: "rocThreshold", label: "Recovery floor %", min: -10, max: 10 },
+    { key: "minDepthPct", label: "Minimum dip depth %", min: 0, max: 10 },
+    { key: "atrPeriod", label: "ATR period", min: 5, max: 100 },
+    { key: "atrMult", label: "ATR stop multiple", min: 0.5, max: 8 },
+    { key: "trailPeriod", label: "Trail lookback", min: 5, max: 200 },
+  ],
+  minCandles: 120,
+  /**
+   * Per-bar-size calibration. The 1h set is the walk-forward consensus from
+   * `npm run optimize:asset -- ethereum eth-pullback-rider`: 3,888 combinations
+   * over an expanding training window with a 260-bar untouched test segment per
+   * fold. Four folds, all profitable, averaging +12.05% against 9.12% drawdown —
+   * the wider drawdown than the BTC strategy is the real cost of ETH's higher
+   * volatility, not a tuning artefact. `pullbackPeriod 30`, `entry -1%` and
+   * `ATR ×4` were selected in every fold; the trend filter moved (60/100/150).
+   *
+   * The full-window figure matches the fold average to within 0.24%, which is
+   * the check that matters — an earlier version showed +12% across folds while
+   * losing money across the whole window, because walk-forward never validates
+   * the earliest bars. The optimiser now prints both so that can't recur.
+   */
+  granularityProfiles: {
+    "1h": {
+      params: {
+        trendPeriod: 100,
+        pullbackPeriod: 30,
+        rocPeriod: 12,
+        rocThreshold: -1,
+        minDepthPct: 0,
+        atrPeriod: 14,
+        atrMult: 4,
+        trailPeriod: 12,
+      },
+      minCandles: 140,
+    },
+    "4h": {
+      params: {
+        trendPeriod: 90,
+        pullbackPeriod: 18,
+        rocPeriod: 8,
+        rocThreshold: -1,
+        minDepthPct: 0,
+        atrPeriod: 14,
+        atrMult: 3.5,
+        trailPeriod: 12,
+      },
+      minCandles: 115,
+    },
+    "1d": {
+      params: {
+        trendPeriod: 75,
+        pullbackPeriod: 12,
+        rocPeriod: 6,
+        rocThreshold: -1,
+        minDepthPct: 0,
+        atrPeriod: 14,
+        atrMult: 3.5,
+        trailPeriod: 10,
+      },
+      minCandles: 100,
+    },
+  },
+  evaluate({ candles, index, params, position }: StrategyContext) {
+    const trendPeriod = Math.round(params.trendPeriod);
+    const pullbackPeriod = Math.round(params.pullbackPeriod);
+    const rocPeriod = Math.round(params.rocPeriod);
+    const atrPeriod = Math.round(params.atrPeriod);
+    const trailPeriod = Math.round(params.trailPeriod);
+
+    const warmup = Math.max(trendPeriod, trailPeriod, rocPeriod + 2) + atrPeriod + 2;
+    if (index < warmup) return hold(`Warming up (${index + 1}/${warmup} bars).`);
+
+    const price = memoized(candles, "close", () => closes(candles as Candle[]));
+    const trendSeries = memoized(candles, `ema:${trendPeriod}`, () => ema(price, trendPeriod));
+    const pullSeries = memoized(candles, `ema:${pullbackPeriod}`, () => ema(price, pullbackPeriod));
+    const atrSeries = memoized(candles, `atr:${atrPeriod}`, () => atr(candles as Candle[], atrPeriod));
+    const highSeries = memoized(candles, "high", () => (candles as Candle[]).map((c) => c.high));
+    const trailSeries = memoized(candles, `rmax:${trailPeriod}`, () => rollingMax(highSeries, trailPeriod));
+
+    const trend = trendSeries[index];
+    const pull = pullSeries[index];
+    const atrValue = atrSeries[index];
+    const recentHigh = trailSeries[index];
+    if (trend === null || pull === null || atrValue === null || recentHigh === null) {
+      return hold("Indicators not ready.");
+    }
+
+    const close = price[index];
+    const roc = ((close - price[index - rocPeriod]) / price[index - rocPeriod]) * 100;
+    const trailStop = recentHigh - params.atrMult * atrValue;
+    const uptrend = close > trend;
+    // A dip must be a *real* dip. Without a depth requirement the strategy
+    // buys every time price grazes the average and churns fees away.
+    const depthPct = ((pull - close) / pull) * 100;
+    const dipped = depthPct >= params.minDepthPct;
+
+    if (position) {
+      if (!uptrend) {
+        return sell(
+          `Pullback broke the ${trendPeriod}-bar trend filter (${close.toFixed(0)} < EMA ${trend.toFixed(0)}).`,
+          0.8,
+        );
+      }
+      if (close <= trailStop) {
+        return sell(
+          `Trail hit: ${close.toFixed(0)} below ${trailStop.toFixed(0)} (${params.atrMult.toFixed(1)}×ATR under the ` +
+            `${trailPeriod}-bar high).`,
+          0.75,
+        );
+      }
+      return hold(`Holding the pullback — back above the ${pullbackPeriod}-EMA at ${pull.toFixed(0)}.`);
+    }
+
+    if (uptrend && dipped && roc >= params.rocThreshold) {
+      return buy(
+        `Pulled back ${depthPct.toFixed(1)}% into the ${pullbackPeriod}-EMA (${close.toFixed(0)}) with the ` +
+          `${trendPeriod}-trend intact — buying the dip.`,
+        Math.min(1, 0.6 + depthPct / 10),
+        { stopLossPrice: close - params.atrMult * 2 * atrValue },
+      );
+    }
+
+    return hold(
+      !uptrend
+        ? `Below the ${trendPeriod}-EMA (${close.toFixed(0)}) — waiting for the trend to turn up.`
+        : `Only ${depthPct.toFixed(1)}% below the ${pullbackPeriod}-EMA (${pull.toFixed(0)}) — ` +
+          `waiting for a ${params.minDepthPct}% dip.`,
+    );
+  },
+});
+
+/**
  * Rate-of-Change Momentum — rides accelerating price changes confirmed by trend.
  */
 export const rocMomentum: Strategy = Object.freeze({

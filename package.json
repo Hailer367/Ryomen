@@ -13,7 +13,7 @@
     "backtest": "tsx scripts/backtest.ts",
     "backtest:all": "tsx scripts/backtest-all.ts",
     "optimize": "tsx scripts/optimize.ts",
-    "optimize:btc": "tsx scripts/optimize-btc.ts"
+    "optimize:asset": "tsx scripts/optimize-asset.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",

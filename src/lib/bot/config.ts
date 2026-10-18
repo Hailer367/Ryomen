@@ -93,6 +93,7 @@ export const BOTS: readonly CoinBot[] = Object.freeze([
     "ETH Beta Engine",
     [
       { strategyId: "sma-golden-cross", weight: 1.0, primary: true },
+      { strategyId: "eth-pullback-rider", weight: 1.0 },
       { strategyId: "volatility-trail", weight: 1.0 },
       { strategyId: "macd-trend", weight: 0.9 },
       { strategyId: "roc-momentum", weight: 0.7 },

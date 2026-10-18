@@ -1,7 +1,7 @@
 /**
  * Walk-forward optimiser for BTC-only strategies.
  *
- *   npm run optimize:btc
+ *   npm run optimize:asset -- <coin> <strategyId>
  *
  * The difference from a normal grid search is everything. Tuning on one window
  * and reporting that same window's profit just measures how well the
@@ -25,13 +25,15 @@ import { runPaperTrading } from "../src/lib/paper/engine";
 import { profileFor, requireStrategy } from "../src/lib/strategies";
 import type { Candle, Granularity } from "../src/lib/market/types";
 
-const COIN = "bitcoin";
-const STRATEGY_ID = "btc-momentum-rider";
+const COIN = process.argv[2] ?? "bitcoin";
+const STRATEGY_ID = process.argv[3] ?? "btc-momentum-rider";
 const GRANULARITY: Granularity = "1h";
 
 interface Combo {
   trendPeriod: number;
   rocPeriod: number;
+  pullbackPeriod?: number;
+  minDepthPct?: number;
   entryThreshold: number;
   exitThreshold: number;
   atrPeriod: number;
@@ -83,19 +85,21 @@ function score(r: Result, days: number): number {
 
 function grid(): Combo[] {
   const out: Combo[] = [];
-  for (const trendPeriod of [30, 50, 70, 100])
-    for (const rocPeriod of [12, 24, 36])
-      for (const entryThreshold of [0.5, 1.5, 3])
-        for (const exitThreshold of [-1, -0.25, 0.5])
+  for (const trendPeriod of [60, 100, 150])
+    for (const pullbackPeriod of [12, 20, 30, 50])
+      for (const rocPeriod of [6, 12, 24])
+        for (const entryThreshold of [-1, 0, 1, 2])
+        for (const exitThreshold of [-2, -1, 0])
+          for (const minDepthPct of [0, 1, 2])
           for (const atrMult of [2, 3, 4])
-            for (const trailPeriod of [10, 20, 30])
-              out.push({ trendPeriod, rocPeriod, entryThreshold, exitThreshold, atrPeriod: 14, atrMult, trailPeriod });
+            for (const trailPeriod of [12, 20, 30])
+              out.push({ trendPeriod, pullbackPeriod, rocPeriod, entryThreshold, exitThreshold, minDepthPct, atrPeriod: 14, atrMult, trailPeriod } as unknown as Combo);
   return out;
 }
 
 const label = (c: Combo) =>
   `trend=${String(c.trendPeriod).padStart(3)} roc=${String(c.rocPeriod).padStart(2)} ` +
-  `entry=${String(c.entryThreshold).padStart(4)} exit=${String(c.exitThreshold).padStart(5)} ` +
+  `depth=${String(c.minDepthPct).padStart(2)} pb=${String(c.pullbackPeriod).padStart(2)} roc=${String(c.rocPeriod).padStart(2)} entry=${String(c.entryThreshold).padStart(4)} ` +
   `atr=${c.atrMult} trail=${String(c.trailPeriod).padStart(2)}`;
 
 async function main() {
@@ -181,9 +185,38 @@ async function main() {
     console.log(`  distinct parameter sets chosen across folds: ${sorted.length}`);
   }
 
+  // ── Full-window sanity check ──────────────────────────────────────────
+  // Walk-forward only ever *tests* the later part of history; the earliest bars
+  // are training-only and never validated. Running the consensus parameters
+  // across everything catches the case where those folds looked great while the
+  // full window does not.
+  const consensus = folds[folds.length - 1]?.best ?? combos[0];
+  const fullWindow = await simulate(candles, candles[WARMUP].time, candles[candles.length - 1].time, consensus);
+
+  console.log("\n════ FULL WINDOW (includes training-only history) ═════════════════════════");
+  if (fullWindow) {
+    console.log(`  return        ${fullWindow.ret >= 0 ? "+" : ""}${fullWindow.ret.toFixed(2)}%`);
+    console.log(`  drawdown      ${fullWindow.dd.toFixed(2)}%`);
+    console.log(`  trips         ${fullWindow.trips}`);
+    console.log(`  win rate      ${fullWindow.win.toFixed(1)}%`);
+    const holdFull = ((candles[candles.length - 1].close / candles[WARMUP].close) - 1) * 100;
+    console.log(`  buy & hold    ${holdFull >= 0 ? "+" : ""}${holdFull.toFixed(2)}%`);
+    const gap = avgRet - fullWindow.ret;
+    console.log(
+      `\n  fold average ${avgRet.toFixed(2)}% vs full window ${fullWindow.ret.toFixed(2)}%  ` +
+        `(${(gap >= 0 ? "+" : "")}${gap.toFixed(2)}% difference)`,
+    );
+    if (fullWindow.ret < 0 && avgRet > 0) {
+      console.log(
+        "  ⚠ the untouched folds were profitable but the full window is not — the earliest bars\n" +
+          "    (never validated) are losing money, and/or the walk-forward window is too short to trust.",
+      );
+    }
+  }
+
   // ── No-lookahead check ───────────────────────────────────────────────
   console.log("\n════ LOOK-AHEAD SAFETY ════════════════════════════════════════════════════");
-  const combo = folds[folds.length - 1]?.best ?? combos[0];
+  const combo = consensus;
   const cut = candles.length - 1;
   const truncated = candles.slice(0, cut + 1);
   const full = await runPaperTrading({

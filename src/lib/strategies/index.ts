@@ -2,6 +2,7 @@ import {
   bollingerReversion,
   btcMomentumRider,
   donchianBreakout,
+  ethPullbackRider,
   macdTrend,
   rsiReversal,
   rocMomentum,
@@ -34,6 +35,7 @@ export function profileFor(strategy: Strategy, granularity: Granularity): Granul
 export const STRATEGIES: readonly Strategy[] = Object.freeze([
   smaGoldenCross,
   btcMomentumRider,
+  ethPullbackRider,
   volatilityTrail,
   donchianBreakout,
   macdTrend,
