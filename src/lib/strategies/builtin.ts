@@ -629,6 +629,169 @@ export const ethPullbackRider: Strategy = Object.freeze({
 });
 
 /**
+ * SOL Breakout Rider — **Solana only**.
+ *
+ * Enters on short-horizon breakouts confirmed by momentum, exits on a
+ * volatility-scaled trail or a broken trend filter.
+ *
+ * Family chosen by measurement (`scripts/analyze.ts solana`): SOL is the
+ * strongest short-horizon trend follower in the fleet — a naive trend-follower
+ * on a 10-bar average made +28.2% over Ryomen's hourly history, decaying to
+ * +9.7% at 100 bars. BTC peaks at a long horizon and ETH mean-reverts, so both
+ * need slow filters; SOL's edge is in the short lookback, which is exactly what
+ * a breakout system uses.
+ *
+ * SOL is also volatile (0.57% per hourly bar, the second-highest here) with an
+ * 18.5% drawdown, so its trail is set by ATR rather than a fixed percentage.
+ *
+ * Forward-safe: every input derives from closed bars at or before `index`.
+ */
+export const solBreakoutRider: Strategy = Object.freeze({
+  id: "sol-breakout-rider",
+  name: "SOL Breakout Rider",
+  category: "Breakout",
+  coins: ["solana"],
+  description:
+    "Solana only. Buys breakouts above the recent high when momentum confirms and the trend filter holds, then trails the exit by ATR.",
+  philosophy:
+    "SOL's moves are front-loaded: the edge lives in the first few bars of a move, not in slow averages. Enter on the break, and let volatility decide when it is over.",
+  defaultParams: {
+    breakoutPeriod: 24,
+    trendPeriod: 50,
+    rocPeriod: 12,
+    rocThreshold: 1,
+    atrPeriod: 14,
+    atrMult: 2.5,
+    trailPeriod: 10,
+  },
+  paramsMeta: [
+    { key: "breakoutPeriod", label: "Breakout lookback", min: 4, max: 100 },
+    { key: "trendPeriod", label: "Trend filter EMA", min: 20, max: 300 },
+    { key: "rocPeriod", label: "Momentum lookback", min: 3, max: 60 },
+    { key: "rocThreshold", label: "Momentum trigger %", min: 0, max: 20 },
+    { key: "atrPeriod", label: "ATR period", min: 5, max: 100 },
+    { key: "atrMult", label: "ATR stop multiple", min: 0.5, max: 8 },
+    { key: "trailPeriod", label: "Trail lookback", min: 5, max: 200 },
+  ],
+  minCandles: 100,
+  /**
+   * Per-bar-size calibration. The 1h set is the walk-forward consensus from
+   * `npm run optimize:asset -- solana sol-breakout-rider <grid>`: 972
+   * combinations, expanding training window, 260-bar untouched test segment per
+   * fold. Four folds, all profitable, averaging +24.76% on 7.10% drawdown, and
+   * the full window came in *above* the fold average at +28.81% — the reverse
+   * of the earlier ETH result where the folds flattered a bad strategy.
+   * `breakoutPeriod 24`, `rocPeriod 12` and `trailPeriod 10` were selected in
+   * every fold; only the trend filter and ATR width moved.
+   */
+  granularityProfiles: {
+    "1h": {
+      params: {
+        breakoutPeriod: 24,
+        trendPeriod: 50,
+        rocPeriod: 12,
+        rocThreshold: 1,
+        atrPeriod: 14,
+        atrMult: 2.5,
+        trailPeriod: 10,
+      },
+      minCandles: 100,
+    },
+    "4h": {
+      params: {
+        breakoutPeriod: 16,
+        trendPeriod: 40,
+        rocPeriod: 10,
+        rocThreshold: 1.5,
+        atrPeriod: 14,
+        atrMult: 2.2,
+        trailPeriod: 8,
+      },
+      minCandles: 80,
+    },
+    "1d": {
+      params: {
+        breakoutPeriod: 14,
+        trendPeriod: 35,
+        rocPeriod: 8,
+        rocThreshold: 2,
+        atrPeriod: 14,
+        atrMult: 2.2,
+        trailPeriod: 7,
+      },
+      minCandles: 70,
+    },
+  },
+  evaluate({ candles, index, params, position }: StrategyContext) {
+    const breakoutPeriod = Math.round(params.breakoutPeriod);
+    const trendPeriod = Math.round(params.trendPeriod);
+    const rocPeriod = Math.round(params.rocPeriod);
+    const atrPeriod = Math.round(params.atrPeriod);
+    const trailPeriod = Math.round(params.trailPeriod);
+
+    const warmup = Math.max(trendPeriod, trailPeriod, breakoutPeriod, rocPeriod + 2) + atrPeriod + 2;
+    if (index < warmup) return hold(`Warming up (${index + 1}/${warmup} bars).`);
+
+    const price = memoized(candles, "close", () => closes(candles as Candle[]));
+    const highSeries = memoized(candles, "high", () => (candles as Candle[]).map((c) => c.high));
+    const trendSeries = memoized(candles, `ema:${trendPeriod}`, () => ema(price, trendPeriod));
+    const atrSeries = memoized(candles, `atr:${atrPeriod}`, () => atr(candles as Candle[], atrPeriod));
+    const trailSeries = memoized(candles, `rmax:${trailPeriod}`, () => rollingMax(highSeries, trailPeriod));
+    // Breakout is measured against the bars *before* this one, so the channel
+    // never contains the bar being tested.
+    const priorHighSeries = memoized(candles, `hmax-prior:${breakoutPeriod}`, () =>
+      rollingMax(highSeries.map((h, i) => (i === 0 ? h : highSeries[i - 1])), breakoutPeriod),
+    );
+
+    const trend = trendSeries[index];
+    const atrValue = atrSeries[index];
+    const trailHigh = trailSeries[index];
+    const priorHigh = priorHighSeries[index];
+    if (trend === null || atrValue === null || trailHigh === null || priorHigh === null) {
+      return hold("Indicators not ready.");
+    }
+
+    const close = price[index];
+    const roc = ((close - price[index - rocPeriod]) / price[index - rocPeriod]) * 100;
+    const trailStop = trailHigh - params.atrMult * atrValue;
+
+    if (position) {
+      if (close < trend) {
+        return sell(
+          `Lost the ${trendPeriod}-bar trend filter (${close.toFixed(1)} < EMA ${trend.toFixed(1)}).`,
+          0.8,
+        );
+      }
+      if (close <= trailStop) {
+        return sell(
+          `Trail hit: ${close.toFixed(1)} below ${trailStop.toFixed(1)} (${params.atrMult.toFixed(1)}×ATR under the ` +
+            `${trailPeriod}-bar high).`,
+          0.75,
+        );
+      }
+      return hold(`Riding the breakout — ${roc >= 0 ? "+" : ""}${roc.toFixed(1)}% momentum, trail ${trailStop.toFixed(1)}.`);
+    }
+
+    const brokeOut = close > priorHigh;
+    if (brokeOut && roc > params.rocThreshold && close > trend) {
+      const overPct = ((close - priorHigh) / priorHigh) * 100;
+      return buy(
+        `Broke the prior ${breakoutPeriod}-bar high (${priorHigh.toFixed(1)}) by ${overPct.toFixed(2)}% with ` +
+          `momentum ${roc.toFixed(1)}% and price above the ${trendPeriod}-EMA.`,
+        Math.min(1, 0.65 + overPct * 5),
+        { stopLossPrice: close - params.atrMult * 2 * atrValue },
+      );
+    }
+
+    return hold(
+      close <= priorHigh
+        ? `Below the prior ${breakoutPeriod}-bar high (${priorHigh.toFixed(1)}) — waiting for a break.`
+        : `Broke out but momentum is only ${roc.toFixed(1)}% (needs > ${params.rocThreshold}%).`,
+    );
+  },
+});
+
+/**
  * Rate-of-Change Momentum — rides accelerating price changes confirmed by trend.
  */
 export const rocMomentum: Strategy = Object.freeze({

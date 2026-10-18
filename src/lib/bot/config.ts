@@ -106,8 +106,9 @@ export const BOTS: readonly CoinBot[] = Object.freeze([
     "SOL Breakout Hunter",
     [
       { strategyId: "sma-golden-cross", weight: 1.0, primary: true },
-      { strategyId: "volatility-trail", weight: 1.0 },
+      { strategyId: "sol-breakout-rider", weight: 1.0 },
       { strategyId: "donchian-breakout", weight: 1.0 },
+      { strategyId: "volatility-trail", weight: 1.0 },
       { strategyId: "roc-momentum", weight: 0.9 },
     ],
     { stopLossFraction: 0.18, signalThreshold: 0.25 },

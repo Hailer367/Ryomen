@@ -7,6 +7,7 @@ import {
   rsiReversal,
   rocMomentum,
   smaGoldenCross,
+  solBreakoutRider,
   volatilityTrail,
 } from "@/lib/strategies/builtin";
 import type { Granularity } from "@/lib/market/types";
@@ -36,6 +37,7 @@ export const STRATEGIES: readonly Strategy[] = Object.freeze([
   smaGoldenCross,
   btcMomentumRider,
   ethPullbackRider,
+  solBreakoutRider,
   volatilityTrail,
   donchianBreakout,
   macdTrend,

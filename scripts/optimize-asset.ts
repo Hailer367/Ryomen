@@ -83,24 +83,43 @@ function score(r: Result, days: number): number {
   return (r.ret * (365 / days)) / 100 - 1.5 * (r.dd / 100);
 }
 
-function grid(): Combo[] {
-  const out: Combo[] = [];
-  for (const trendPeriod of [60, 100, 150])
-    for (const pullbackPeriod of [12, 20, 30, 50])
-      for (const rocPeriod of [6, 12, 24])
-        for (const entryThreshold of [-1, 0, 1, 2])
-        for (const exitThreshold of [-2, -1, 0])
-          for (const minDepthPct of [0, 1, 2])
-          for (const atrMult of [2, 3, 4])
-            for (const trailPeriod of [12, 20, 30])
-              out.push({ trendPeriod, pullbackPeriod, rocPeriod, entryThreshold, exitThreshold, minDepthPct, atrPeriod: 14, atrMult, trailPeriod } as unknown as Combo);
-  return out;
+/**
+ * Grid spec comes from the 4th CLI argument, e.g.
+ *
+ *   npm run optimize:asset -- solana sol-breakout-rider \
+ *     "breakoutPeriod=6,10,16;trendPeriod=30,50,90;rocThreshold=0,1,2;atrMult=2,2.5,3"
+ *
+ * Keeping it in the invocation (rather than hard-coded) means one optimiser
+ * serves every strategy shape without edits.
+ */
+function parseGrid(spec: string): Combo[] {
+  const out: Record<string, number>[] = [{}];
+  for (const clause of spec.split(";")) {
+    const [rawKey, rawValues] = clause.split("=");
+    const key = rawKey.trim();
+    const values = rawValues.split(",").map((v) => Number(v.trim()));
+    const next: Record<string, number>[] = [];
+    for (const base of out) {
+      for (const v of values) next.push({ ...base, [key]: v });
+    }
+    out.length = 0;
+    out.push(...next);
+  }
+  return out as unknown as Combo[];
 }
 
-const label = (c: Combo) =>
-  `trend=${String(c.trendPeriod).padStart(3)} roc=${String(c.rocPeriod).padStart(2)} ` +
-  `depth=${String(c.minDepthPct).padStart(2)} pb=${String(c.pullbackPeriod).padStart(2)} roc=${String(c.rocPeriod).padStart(2)} entry=${String(c.entryThreshold).padStart(4)} ` +
-  `atr=${c.atrMult} trail=${String(c.trailPeriod).padStart(2)}`;
+function defaultGrid(): Combo[] {
+  return parseGrid(
+    "trendPeriod=60,100,150;pullbackPeriod=12,20,30,50;rocPeriod=6,12,24;" +
+      "entryThreshold=-1,0,1,2;minDepthPct=0,1,2;atrMult=2,3,4;trailPeriod=12,20,30",
+  );
+}
+
+const label = (c: Combo): string =>
+  Object.entries(c as unknown as Record<string, number>)
+    .filter(([k]) => k !== "atrPeriod")
+    .map(([k, v]) => `${k}=${String(v).padStart(4)}`)
+    .join(" ");
 
 async function main() {
   const candles = load(COIN, GRANULARITY);
@@ -109,7 +128,7 @@ async function main() {
     process.exit(1);
   }
 
-  const combos = grid();
+  const combos = process.argv[4] ? parseGrid(process.argv[4]) : defaultGrid();
   const WARMUP = 120;
   const TEST = 260;
 
